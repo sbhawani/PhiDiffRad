@@ -1,0 +1,109 @@
+FORTRAN code DIFFRAD is a program for calculation of QED radiative
+corrections in diffractive vector meson electroproduction. Our
+approach and all explicit formulae are described in refs.
+
+I.Akushevich, Eur.Phys.J.C8:457-463,1999
+
+I.Akushevich, In "Hamburg 1998/1999, Monte Carlo generators for
+                  HERA physics" 547-553.
+              e-Print Archive: hep-ph/9906410
+
+I.Akushevich and P.Kuzhir, e-Print Archive: hep-ph/9911346
+
+
+There are two version of the code included in this standard
+package
+1. IDIFFRAD.F with usual numerical integration over photon phase
+   space and measured vector meson angles
+2. MDIFFRAD.F with Monte Carlo integration.
+All input keys and parameters are collected in files INPUT.DAT and
+INMDI.DAT respectively
+
+Typical variant of INPUT.DAT can look like this
+27.57    !  bmom - lepton momentum
+810.0    !  tmom - momentum per nucleon
+1        !  lepton - 1 electron, 2 muon
+1        !  ivec -(1) rho, (2) omega, (3) phi, (4) J/Psi
+1        !  intphi -integration over phi_{h} (1) or not (0);(2)--appr.only
+0.       !  vcut - cut on v. (0.) if no cut, negative -- v
+2        !  npoi - number of kinematical point
+-5000. -5000.
+-2.     -6.
+-0.2    -0.2
+******* End of file **********
+vcut (if positive) defines a cut on inelasticity.  There is no any
+cut used in the case vcut=0. In the case of negative vcut the code
+prepares a grid for formcoming MC generation of RC to
+inelasticity distribution using additional code MVDI.F .
+
+Kinematical points are defined by three or four (if integration
+over phi_{h} is not performed) kinematical variables:
+x (or -W2 if negative)
+y (or -Q2 if negative)
+t (must be negative)
+phi_h (if integration over phi_{h} is not performed)
+Each column in the lines after 'npoi' definition corresponds to
+one kinematical point. Number of columns must be equal to npoi.
+
+
+Typical variant of INMDI.DAT can look like this
+27.50     !  bmom - lepton momentum
+810.0     !  tmom - proton momentum
+1         !  lepton - 1 electron, 2 muon
+1         !  ivec -(1) rho, (2) omega, (3) phi, (4) J/Psi
+1d7 1d7 5d6   ! ann1,ann2,ann3 -- numbers of events
+0.        !  vcut - cut on v. (0.) if no cut
+3         !  nev - number of samples for each point
+333522    !  random seed
+3         !  npoi - number of kinematical point
+-5000. -5000. -5000.
+-5000. -5000. -5000.
+-2. -4.  -6.
+-2. -4.  -6.
+-0.2 -0.2 -0.2
+-0.2 -0.2 -0.2
+******** End of file **********
+This version uses simple generator of random numbers URAND. It is
+explicitely added to the code. Small changes are necessary to
+change for using of generators from CERNLIB. Please contact us for
+details. 'IY' defines random seed.
+ann1,ann2,ann3 define numbers of MC events for calculation of
+    integrals for Born, V- and R-conributions (ann1, ann2,
+    12*ann3). We note that integration region over photon
+    angles are separated into 12 parts in according to structure of
+    peaks.
+6 lines are required to define kinematics
+-W2_min
+-W2_max
+-Q2_min
+-Q2_max
+-t_min
+-t_max
+Each column in the lines after 'npoi' definition corresponds to
+one kinematical point. Number of columns must be equal to npoi.
+
+
+Output file of IDIFFRAD run is ALLU.DAT.  It includes information
+about results of calculation for all chosen kinematical points.
+The corresponding line with operator WRITE looks like this
+
+       write(21,'(2f6.3,f8.3,f8.0,f8.3,3f9.3,2g12.4)')
+     .  xs,ys,q2,w2,tdif,sig/sib,wei,abs(wei-sig/sib),sig,sib
+
+The printed quantites are x, y, Q2, W2, RC to the cross section,
+approximate RC to the cross section, difference between them and
+observed and born cross sections in nanobarns.
+
+In the case of MDIFFRAD.F corresponding information are printed in
+files allmc.dat and etamc.dat. First one includes information
+about RC in chosen points in all samples:
+        write(9,'(a5,g11.4,6f7.3)')' main',
+     .  resig(0,1)/resig(1,1)*2d0*pi,dev,der,de,sumnev/jjiy,err
+where the following quantities are printed:  the born cross
+section, virtual photon contribution to RC, real photon
+contribution, total RC for the sample, mean value of RC over
+samples, statistical error.
+    Mean value of RC over samples with statistical error are
+printed for each kinematical bin (i1):
+        write(19,'(i5,5f7.3)')i1,summea,err
+
