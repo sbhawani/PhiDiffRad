@@ -127,17 +127,17 @@ void RunDiffrad(const char* inputFile = "input.dat",
     if (regenerateInput) {
         Printf("\n[Step 1] Writing input file: %s", inputFile);
 
-        double bmom   = 27.57;   // lepton beam momentum  [GeV]
-        double tmom   = 810.0;   // nucleon momentum      [GeV/c]
+        double bmom   = 10.6;   // lepton beam momentum  [GeV]
+        double tmom   = 0.0;   // nucleon momentum      [GeV/c]
         int    lepton = 1;       // 1 = electron
-        int    ivec   = 1;       // 1 = rho meson
+        int    ivec   = 3;       // 1 = rho meson
         int    intphi = 1;       // integrate over phi_h
         double vcut   = 0.0;     // no inelasticity cut
 
         // Kinematic points: negative values mean -W2 or -Q2
-        std::vector<double> xv  = {-5000., -5000., -5000., -5000.};
-        std::vector<double> yv  = {-2.,    -4.,    -6.,    -8.   };
-        std::vector<double> tv  = {-0.2,   -0.2,   -0.2,   -0.2  };
+        std::vector<double> xv  = {-9.,  -9.,  -9.,  -9.,  -9.,  -9.,  -9.,  -9.,  -9.,  -9.}; //-W^2
+        std::vector<double> yv  = {-0.2, -0.4, -0.6, -0.8, -1.0, -1.2, -1.4, -1.6, -1.8, -2.0};//-Q^2
+        std::vector<double> tv  = {-0.2, -0.2, -0.2, -0.2, -0.2, -0.2, -0.2, -0.2, -0.2, -0.2};//t (must be negative)
         std::vector<double> phv;  // not needed when intphi=1
 
         WriteInputDat(inputFile, bmom, tmom, lepton, ivec,
