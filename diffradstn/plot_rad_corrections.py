@@ -41,7 +41,22 @@ parser.add_argument("--outdir", default="",
                     help="Output directory (default: same as CSV)")
 args = parser.parse_args()
 
+
+# If user didn't pass an explicit CSV and the default file isn't in the CWD,
+# try the standard RunMDiffradNew output locations for 10p2/10p6 runs.
 csv_path = args.csv
+if csv_path == "diffrad_rc_results.csv" and not os.path.isfile(csv_path) and args.period:
+    p = args.period.lower()
+    # accept 10p2 / 10p6 as shorthand
+    if "10p2" in p or p in ("10.2", "10p2gev"):
+        candidate = os.path.join("outputs", "10p2GeV", "diffrad_rc_results.csv")
+        if os.path.isfile(candidate):
+            csv_path = candidate
+    elif "10p6" in p or p in ("10.6", "10p6gev"):
+        candidate = os.path.join("outputs", "10p6GeV", "diffrad_rc_results.csv")
+        if os.path.isfile(candidate):
+            csv_path = candidate
+
 if not os.path.isfile(csv_path):
     sys.exit(f"[ERROR] CSV not found: {csv_path}")
 

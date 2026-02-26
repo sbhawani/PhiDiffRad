@@ -119,14 +119,26 @@ static const std::vector<double> kTpEdges = {
 // Set these to match your directory layout before running.
 static const char* kFortranSrc    = "./mdiffrad.f";       // FORTRAN source
 static const char* kExecutable    = "./mdiffrad_exec";    // compiled binary
-static const char* kBinningCsv    = "";                   // CSV from DISANA_PhiAnalysisPlotter
-                                                          // (leave "" to use hard-coded edges above)
-
+//static const char* kBinningCsv    = "";                   // CSV from DISANA_PhiAnalysisPlotter
+                           
+// (leave "" to use hard-coded edges above)
+//
+// Choose run period at execution time:
+//   root -b -q './RunMDiffradNew.C++("10p2")'
+//   root -b -q './RunMDiffradNew.C++("10p6")'
+//
+static const char* kBinningCsv_10p2 = "/w/hallb-scshelf2102/clas12/singh/Softwares/DISANA_main/Phi_results/Final/DVKpKm/Cross-sections/phi_analysis_plots/diffrad_binning_10p2GeV.csv";
+static const char* kBinningCsv_10p6 = "/w/hallb-scshelf2102/clas12/singh/Softwares/DISANA_main/Phi_results/Final/DVKpKm/Cross-sections/phi_analysis_plots/diffrad_binning_10p6GeV.csv";
+static const char* kOutDir_10p2     = "./outputs/10p2GeV";
+static const char* kOutDir_10p6     = "./outputs/10p6GeV";
+// Fallback beam momentum if CSV doesn't provide beam_momentum (or CSV disabled)
+static constexpr double kBmom_10p2  = 10.20;
+static constexpr double kBmom_10p6  = 10.60;
 // ── Output directory ──────────────────────────────────────────────────────────
 // All outputs (CSV, ROOT, PNGs, work/ subdirs, inmdi.dat) go here.
 // The directory is created automatically if it does not exist.
 // Relative paths are resolved from the directory where you run root.
-static const char* kOutDir = "./outputs";
+//static const char* kOutDir = "./outputs";
 
 // ── Run control ───────────────────────────────────────────────────────────────
 static constexpr bool kRegenInput = true;   // write a fresh inmdi.dat each run
@@ -571,18 +583,25 @@ static void DrawEdgeLines(const std::vector<double>& edges,
 // ─────────────────────────────────────────────────────────────────────────────
 //  MAIN
 // ─────────────────────────────────────────────────────────────────────────────
-void RunMDiffradNew()
+void RunMDiffradNew(TString period="10p6")
 {
     // ── All settings are at the top of this file ──────────────────────────────
     const char* fortranSrc     = kFortranSrc;
     const char* executable     = kExecutable;
-    const char* binningCsvPath = kBinningCsv;
+    TString p = period;
+    p.ToLower();
+    const bool is10p2 = (p == "10p2" || p == "10.2" || p.Contains("10p2"));
+    const bool is10p6 = (p == "10p6" || p == "10.6" || p.Contains("10p6"));
+    if (!is10p2 && !is10p6) {
+        Warning("RunMDiffradNew", "Unknown period '%s' — defaulting to 10p6.", p.Data());
+    }
+    const char* binningCsvPath = is10p2 ? kBinningCsv_10p2 : kBinningCsv_10p6;
+    const double defaultBeamMom = is10p2 ? kBmom_10p2 : kBmom_10p6;
     bool        regenInput     = kRegenInput;
     bool        recompile      = kRecompile;
 
     // ── Create output directory and build output-path helper ──────────────────
-    std::string outDir = kOutDir;
-    // Trim trailing slash for consistency
+    std::string outDir = is10p2 ? kOutDir_10p2 : kOutDir_10p6;
     while (outDir.size() > 1 && outDir.back() == '/') outDir.pop_back();
     ::system(("mkdir -p " + outDir).c_str());
     ::system(("mkdir -p " + outDir + "/work").c_str());
@@ -614,7 +633,7 @@ void RunMDiffradNew()
     std::vector<double> activeTpEdges;
     double activeW2lo    = kW2lo;
     double activeW2hi    = kW2hi;
-    double activeBeamMom = kBmom;         // overridden by CSV when provided
+    double activeBeamMom = defaultBeamMom; // overridden by CSV when provided
 
     bool useCsv = (binningCsvPath && binningCsvPath[0] != '\0');
     if (useCsv) {
@@ -1398,25 +1417,84 @@ void RunMDiffradNew()
         br_nsamp=rb.nsamp;
         tSum->Fill();
     }
-    h2->Write();
-    tAll->Write(); tSum->Write();
+
+    // ── DISANA-compatible RDF tree ("radcorr_rdf") ────────────────────────
+    //
+    //  Purpose: feed directly into DISANAplotter::MakePhiRadiativeCorrection3D_FromRatio
+    //  via ROOT::RDF::RDataFrame("radcorr_rdf", "mdiffrad_output.root").
+    //
+    //  How it works:
+    //    MakePhiRadiativeCorrection3D_FromRatio profiles "rad_corr" vs "mtprime"
+    //    after filtering on Q2 and W.  It expects one row per kinematic point
+    //    (or many rows — it averages them).  We write kRdfReplica rows per bin,
+    //    all at the bin centre, so every t' bin is represented equally in the
+    //    TProfile regardless of statistics.
+    //
+    //  Columns (match DISANAplotter column names exactly):
+    //    Q2       — Q² bin centre  (GeV²)
+    //    W        — W  bin centre  (GeV)    derived from W² centre
+    //    mtprime  — t' bin centre  (GeV²)   = tpc  (positive, = |t|−|tmin|)
+    //    rad_corr — δ_RC mean for this bin  (NaN bins get 1.0 as safe fallback)
+    //    beam_mom — beam momentum used      (GeV)   for bookkeeping
+    //    iQ2, itp — bin indices             for debugging
+    //
+    //  Usage in DISANA_PhiAnalysisPlotter.cpp:
+    //    auto df_radRDF = ROOT::RDF::RDataFrame("radcorr_rdf",
+    //                         "outputs/mdiffrad_output.root");
+    //    ROOT::RDF::RNode df_rad = df_radRDF;
+    //    comparer.AddModelPhi(df_data, label, E, lumi,
+    //                         df_gen, df_rec, df_rad,
+    //                         doAcc, doEff, /*doRadCorr=*/true);
+    // ─────────────────────────────────────────────────────────────────────
+    static constexpr int kRdfReplica = 100; // rows per bin (more = smoother profile)
+
+    TTree* tRdf = new TTree("radcorr_rdf",
+        "DISANA rad-corr RDF — feed to MakePhiRadiativeCorrection3D_FromRatio");
+    Double_t rdf_Q2, rdf_W, rdf_mtprime, rdf_rad_corr, rdf_beam_mom;
+    Int_t    rdf_iQ2, rdf_itp;
+    tRdf->Branch("Q2",       &rdf_Q2,       "Q2/D");
+    tRdf->Branch("W",        &rdf_W,        "W/D");
+    tRdf->Branch("mtprime",  &rdf_mtprime,  "mtprime/D");
+    tRdf->Branch("rad_corr", &rdf_rad_corr, "rad_corr/D");
+    tRdf->Branch("beam_mom", &rdf_beam_mom, "beam_mom/D");
+    tRdf->Branch("iQ2",      &rdf_iQ2,      "iQ2/I");
+    tRdf->Branch("itp",      &rdf_itp,      "itp/I");
+
+    for (auto& rb : summary) {
+        const auto& b = rb.bin;
+        rdf_Q2       = b.Q2c;
+        rdf_W        = b.Wc;
+        rdf_mtprime  = b.tpc;
+        rdf_rad_corr = IsFinite(rb.rc_mean) ? rb.rc_mean : 1.0; // fallback=1 (no correction)
+        rdf_beam_mom = activeBeamMom;
+        rdf_iQ2      = b.iQ2;
+        rdf_itp      = b.itp;
+        for (int r = 0; r < kRdfReplica; ++r) tRdf->Fill();
+    }
+    Printf("  radcorr_rdf: %d bins × %d replicas = %lld rows",
+           npoi, kRdfReplica, tRdf->GetEntries());
+
+    h2->Write(); tAll->Write(); tSum->Write(); tRdf->Write();
     fout->Close();
     Printf("  Written: %s", kOutRoot.c_str());
 
     // ── Done ──────────────────────────────────────────────────────────────
     Printf("\n══════════════════════════════════════════════════════════");
-    Printf("  DONE   %d bins processed", npoi);
+    Printf("  DONE   %d bins processed  (beam_mom=%.4f GeV)", npoi, activeBeamMom);
     Printf("  Outputs:");
     Printf("    %-42s  RC results + bin geometry (Python-ready)", kOutCsvRC.c_str());
     Printf("    %-42s  RC vs t', |t|, heatmap, index",            kOutPng.c_str());
     Printf("    %-42s  RC vs Q² per t' bin",                      kOutPngQ2.c_str());
-    Printf("    %-42s  ROOT trees",                               kOutRoot.c_str());
+    Printf("    %-42s  ROOT trees (rcsum + radcorr_rdf)",          kOutRoot.c_str());
     Printf("    %-42s  per-point logs",                           (kWorkDir + "/pt_*/mdiffrad.log").c_str());
     Printf("══════════════════════════════════════════════════════════");
     Printf("  Python plotting:");
     Printf("    python3 plot_rad_corrections.py %s", kOutCsvRC.c_str());
-    Printf("  RDF postprocessing:");
-    Printf("    // read rdf_filter column from %s, then:", kOutCsvRC.c_str());
-    Printf("    df.Define(\"sigma_rc\", \"sigma_born / rad_corr\");");
+    Printf("  DISANA PhiAnalysis usage:");
+    Printf("    // In DISANA_PhiAnalysisPlotter.cpp:");
+    Printf("    auto df_rad = ROOT::RDF::RDataFrame(\"radcorr_rdf\", \"%s\");", kOutRoot.c_str());
+    Printf("    comparer.AddModelPhi(df_data, label, E, lumi,");
+    Printf("                         df_gen, df_rec, ROOT::RDF::RNode(df_rad),");
+    Printf("                         doAcc, doEff, /*doRadCorr=*/true);");
     Printf("══════════════════════════════════════════════════════════\n");
 }
