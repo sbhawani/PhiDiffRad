@@ -27,7 +27,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-from matplotlib.cm import get_cmap
+from matplotlib.cm import get_cmap  # noqa: F401 (kept for older mpl; see below)
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -68,7 +68,7 @@ tag = f"_{args.period}" if args.period else ""
 def out_path(name):
     return os.path.join(out_dir, name.replace(".pdf", f"{tag}.pdf"))
 
-# ── Load CSV ─────────────────────────────────────────────────────────────────
+# ── Load main RC results CSV ──────────────────────────────────────────────────
 # Skip comment lines starting with #
 df = pd.read_csv(csv_path, comment="#")
 df.columns = df.columns.str.strip()
@@ -81,6 +81,32 @@ n_before = len(df)
 df = df.dropna(subset=["rad_corr"])
 if len(df) < n_before:
     print(f"  WARNING: dropped {n_before - len(df)} rows with NaN rad_corr")
+
+# ── Load Vcut scan CSV (optional — produced by RunMDiffradNew Step 7b) ────────
+vcut_csv_path = os.path.join(os.path.dirname(os.path.abspath(csv_path)),
+                             "diffrad_rc_vs_vcut.csv")
+df_vcut = None
+vcut_fixed_itp = None
+if os.path.isfile(vcut_csv_path):
+    df_vcut = pd.read_csv(vcut_csv_path, comment="#")
+    df_vcut.columns = df_vcut.columns.str.strip()
+    df_vcut = df_vcut.dropna(subset=["rad_corr"])
+    print(f"[plot_rad_corrections] Vcut scan: {len(df_vcut)} rows from {vcut_csv_path}")
+    # Read fixed_itp from header comment
+    with open(vcut_csv_path) as _fv:
+        for _line in _fv:
+            if not _line.startswith("#"):
+                break
+            if "fixed_itp" in _line:
+                try:
+                    vcut_fixed_itp = int(_line.split("=")[1].strip().split()[0])
+                except Exception:
+                    pass
+else:
+    print(f"[plot_rad_corrections] NOTE: Vcut scan CSV not found at {vcut_csv_path}")
+    print("  Run RunMDiffradNew (Step 7b is automatic) to generate it.")
+
+
 
 # ── Metadata from CSV header comments ────────────────────────────────────────
 beam_mom = None
@@ -108,9 +134,10 @@ nTp      = len(tp_bins)
 
 # ── Colour palettes ───────────────────────────────────────────────────────────
 # Q² bins: blues/reds from a diverging map
-q2_colors  = [get_cmap("RdYlBu")(i / max(nQ2 - 1, 1)) for i in range(nQ2)]
+_get_cmap   = getattr(matplotlib, "colormaps", None) and (lambda n: matplotlib.colormaps[n]) or get_cmap
+q2_colors  = [_get_cmap("RdYlBu")(i / max(nQ2 - 1, 1)) for i in range(nQ2)]
 # t' bins: warm→cool
-tp_colors  = [get_cmap("plasma")(i / max(nTp - 1, 1)) for i in range(nTp)]
+tp_colors  = [_get_cmap("plasma")(i / max(nTp - 1, 1)) for i in range(nTp)]
 
 markers_q2 = ["o", "s", "^", "D", "v", "P", "*", "X"]
 markers_tp = ["o", "s", "^", "D", "v", "P", "*", "X", "h"]
@@ -150,16 +177,16 @@ plt.rcParams.update({
 def plot_vs_tprime(ax):
     for i, iQ2 in enumerate(q2_bins):
         sub = df[df["iQ2"] == iQ2].sort_values("tprime_c")
-        ax.errorbar(sub["tprime_c"], sub["rad_corr"],
-                    xerr=0.5*(sub["tprime_hi"] - sub["tprime_lo"]),
-                    yerr=sub["rad_corr_sigma"].fillna(0),
+        x    = sub["tprime_c"].to_numpy()
+        y    = sub["rad_corr"].to_numpy()
+        xerr = (0.5*(sub["tprime_hi"] - sub["tprime_lo"])).to_numpy()
+        yerr = sub["rad_corr_sigma"].fillna(0).to_numpy()
+        ax.errorbar(x, y, xerr=xerr, yerr=yerr,
                     fmt=markers_q2[i % len(markers_q2)],
                     color=q2_colors[i], label=q2_label(iQ2),
                     markersize=5, linewidth=1.2, capsize=3)
         # shaded ±σ band
-        ax.fill_between(sub["tprime_c"],
-                        sub["rad_corr"] - sub["rad_corr_sigma"].fillna(0),
-                        sub["rad_corr"] + sub["rad_corr_sigma"].fillna(0),
+        ax.fill_between(x, y - yerr, y + yerr,
                         color=q2_colors[i], alpha=0.12)
     # bin-edge guide lines
     for e in sorted(df["tprime_lo"].unique()):
@@ -175,15 +202,15 @@ def plot_vs_tprime(ax):
 def plot_vs_tabs(ax):
     for i, iQ2 in enumerate(q2_bins):
         sub = df[df["iQ2"] == iQ2].sort_values("t_abs_c")
-        ax.errorbar(sub["t_abs_c"], sub["rad_corr"],
-                    xerr=0.5*(sub["t_abs_hi"] - sub["t_abs_lo"]),
-                    yerr=sub["rad_corr_sigma"].fillna(0),
+        x    = sub["t_abs_c"].to_numpy()
+        y    = sub["rad_corr"].to_numpy()
+        xerr = (0.5*(sub["t_abs_hi"] - sub["t_abs_lo"])).to_numpy()
+        yerr = sub["rad_corr_sigma"].fillna(0).to_numpy()
+        ax.errorbar(x, y, xerr=xerr, yerr=yerr,
                     fmt=markers_q2[i % len(markers_q2)],
                     color=q2_colors[i], label=q2_label(iQ2),
                     markersize=5, linewidth=1.2, capsize=3)
-        ax.fill_between(sub["t_abs_c"],
-                        sub["rad_corr"] - sub["rad_corr_sigma"].fillna(0),
-                        sub["rad_corr"] + sub["rad_corr_sigma"].fillna(0),
+        ax.fill_between(x, y - yerr, y + yerr,
                         color=q2_colors[i], alpha=0.12)
     for e in sorted(df["t_abs_lo"].unique()):
         ax.axvline(e, color="gray", lw=0.6, ls=":")
@@ -198,15 +225,15 @@ def plot_vs_tabs(ax):
 def plot_vs_Q2(ax):
     for j, itp in enumerate(tp_bins):
         sub = df[df["itp"] == itp].sort_values("Q2_c")
-        ax.errorbar(sub["Q2_c"], sub["rad_corr"],
-                    xerr=0.5*(sub["Q2_hi"] - sub["Q2_lo"]),
-                    yerr=sub["rad_corr_sigma"].fillna(0),
+        x    = sub["Q2_c"].to_numpy()
+        y    = sub["rad_corr"].to_numpy()
+        xerr = (0.5*(sub["Q2_hi"] - sub["Q2_lo"])).to_numpy()
+        yerr = sub["rad_corr_sigma"].fillna(0).to_numpy()
+        ax.errorbar(x, y, xerr=xerr, yerr=yerr,
                     fmt=markers_tp[j % len(markers_tp)],
                     color=tp_colors[j], label=tp_label(itp),
                     markersize=5, linewidth=1.2, capsize=3)
-        ax.fill_between(sub["Q2_c"],
-                        sub["rad_corr"] - sub["rad_corr_sigma"].fillna(0),
-                        sub["rad_corr"] + sub["rad_corr_sigma"].fillna(0),
+        ax.fill_between(x, y - yerr, y + yerr,
                         color=tp_colors[j], alpha=0.10)
     for e in sorted(df["Q2_lo"].unique()):
         ax.axvline(e, color="gray", lw=0.6, ls=":")
@@ -251,12 +278,64 @@ def plot_heatmap(ax):
     ax.set_ylabel("$Q^2$ bin centre (GeV$^2$)")
     ax.set_title("$\\delta_{RC}(Q^2,\\ t')$ heatmap")
 
+# ── Plot 5: δ_RC vs Vcut ─────────────────────────────────────────────────────
+# Three Q² bins (smallest / middle / largest), fixed middle t' bin.
+# Shows how the radiative correction changes as the V-cut parameter is varied
+# from 0 (no cut) up to kVcutScanMax = 5 GeV² in steps of 0.2 GeV².
+def plot_vs_vcut(ax):
+    if df_vcut is None or len(df_vcut) == 0:
+        ax.text(0.5, 0.5,
+                "Vcut scan data not found.\n"
+                "Run RunMDiffradNew — Step 7b generates\n"
+                "diffrad_rc_vs_vcut.csv automatically.",
+                ha="center", va="center", transform=ax.transAxes,
+                fontsize=10, color="gray", style="italic")
+        ax.set_xlabel("$V_{\\rm cut}$ (GeV$^2$)")
+        ax.set_ylabel("Radiative Correction $\\delta_{RC}$")
+        ax.set_title("$\\delta_{RC}$ vs $V_{\\rm cut}$  (3 Q$^2$ bins)")
+        return
+
+    # Colours and markers for the 3 Q² values (blue → green → red)
+    vc_colors  = ["#2166ac", "#33a02c", "#d6604d"]
+    vc_markers = ["o", "s", "^"]
+
+    scan_q2_bins = sorted(df_vcut["iQ2"].unique())
+    for k, iQ2 in enumerate(scan_q2_bins):
+        sub = df_vcut[df_vcut["iQ2"] == iQ2].sort_values("vcut")
+        x    = sub["vcut"].to_numpy()
+        y    = sub["rad_corr"].to_numpy()
+        yerr = sub["rad_corr_sigma"].fillna(0).to_numpy()
+
+        q2_lo = sub["Q2_lo"].iloc[0];  q2_hi = sub["Q2_hi"].iloc[0]
+        tp_lo = sub["tprime_lo"].iloc[0];  tp_hi = sub["tprime_hi"].iloc[0]
+        label = (f"${q2_lo:.2f} \\leq Q^2 < {q2_hi:.2f}$ GeV$^2$"
+                 f",  $t'\\in[{tp_lo:.3f},\\,{tp_hi:.3f})$ GeV$^2$")
+
+        c = vc_colors[k % len(vc_colors)]
+        m = vc_markers[k % len(vc_markers)]
+        ax.errorbar(x, y, yerr=yerr, fmt=m, color=c, label=label,
+                    markersize=5, linewidth=1.4, capsize=3)
+        ax.fill_between(x, y - yerr, y + yerr, color=c, alpha=0.12)
+
+    # Reference lines
+    ax.axhline(1.0, color="black", lw=0.8, ls="--", alpha=0.5, label="$\\delta_{RC}=1$")
+    ax.axvline(0.02, color="purple", lw=1.0, ls=":", alpha=0.8,
+               label=f"Default $V_{{\\rm cut}}$ = 0.02 GeV$^2$")
+
+    ax.set_xlabel("$V_{\\rm cut}$ (GeV$^2$)")
+    ax.set_ylabel("Radiative Correction $\\delta_{RC}$")
+    ax.set_title("$\\delta_{RC}$ vs $V_{\\rm cut}$  (3 Q$^2$ bins, fixed $t'$ bin)")
+    ax.set_xlim(-0.1, df_vcut["vcut"].max() + 0.2)
+    ax.set_ylim(0.1, 3.2)
+    ax.legend(loc="best", framealpha=0.7, ncol=1, fontsize=8)
+
 # ── Individual PDFs ───────────────────────────────────────────────────────────
 for fname, plot_fn, figsize in [
     ("rad_corr_vs_tprime.pdf", plot_vs_tprime, (7, 5)),
     ("rad_corr_vs_tabs.pdf",   plot_vs_tabs,   (7, 5)),
     ("rad_corr_vs_Q2.pdf",     plot_vs_Q2,     (7, 5)),
     ("rad_corr_heatmap.pdf",   plot_heatmap,   (8, 5)),
+    ("rad_corr_vs_vcut.pdf",   plot_vs_vcut,   (9, 5)),
 ]:
     fig, ax = plt.subplots(figsize=figsize)
     plot_fn(ax)
@@ -268,14 +347,32 @@ for fname, plot_fn, figsize in [
     plt.close(fig)
     print(f"  Saved: {p}")
 
-# ── Summary: all four panels on one page ─────────────────────────────────────
-fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-plot_vs_tprime(axes[0, 0])
-plot_vs_tabs  (axes[0, 1])
-plot_vs_Q2    (axes[1, 0])
-plot_heatmap  (axes[1, 1])
-fig.suptitle(f"MDIFFRAD Radiative Corrections  —  {kin_label}", fontsize=12)
-fig.tight_layout()
+# ── Summary: five panels — 2×2 grid + full-width Vcut panel at the bottom ────
+#
+#   Row 0:  δ_RC vs t'   |  δ_RC vs |t|
+#   Row 1:  δ_RC vs Q²   |  2D heatmap
+#   Row 2:  δ_RC vs Vcut (spans full width)
+#
+from matplotlib.gridspec import GridSpec
+
+fig = plt.figure(figsize=(14, 13))
+gs  = GridSpec(3, 2, figure=fig,
+               height_ratios=[1, 1, 0.85],
+               hspace=0.42, wspace=0.30)
+
+ax00 = fig.add_subplot(gs[0, 0])
+ax01 = fig.add_subplot(gs[0, 1])
+ax10 = fig.add_subplot(gs[1, 0])
+ax11 = fig.add_subplot(gs[1, 1])
+ax_vc = fig.add_subplot(gs[2, :])   # full-width bottom row
+
+plot_vs_tprime(ax00)
+plot_vs_tabs  (ax01)
+plot_vs_Q2    (ax10)
+plot_heatmap  (ax11)
+plot_vs_vcut  (ax_vc)
+
+fig.suptitle(f"MDIFFRAD Radiative Corrections  —  {kin_label}", fontsize=13, y=0.995)
 p = out_path("rad_corr_summary.pdf")
 fig.savefig(p, dpi=150, bbox_inches="tight")
 plt.close(fig)

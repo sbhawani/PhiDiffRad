@@ -94,6 +94,13 @@ static constexpr double kVcut = 0.02;
 static constexpr int    kNev  = 3;        // MC samples per kinematic point
 static constexpr long   kSeed = 333522;
 
+// ── Vcut scan settings ───────────────────────────────────────────────────────
+// Sweeps Vcut from 0.0 to kVcutScanMax in steps of kVcutScanStep.
+// Three Q² bins are chosen automatically (smallest, middle, largest) at the
+// middle t' bin; all other MDIFFRAD parameters are kept identical to the main run.
+static constexpr double kVcutScanStep = 0.20;   // step size (GeV²)
+static constexpr double kVcutScanMax  = 5.00;   // maximum Vcut value (GeV²)
+
 // ── Parallelism ───────────────────────────────────────────────────────────────
 // Max number of MDIFFRAD subprocesses to run simultaneously.
 // Set to the number of physical cores available on your node.
@@ -127,8 +134,10 @@ static const char* kExecutable    = "./mdiffrad_exec";    // compiled binary
 //   root -b -q './RunMDiffradNew.C++("10p2")'
 //   root -b -q './RunMDiffradNew.C++("10p6")'
 //
-static const char* kBinningCsv_10p2 = "/w/hallb-scshelf2102/clas12/singh/Softwares/DISANA_main/Phi_results/Final/DVKpKm/Cross-sections/phi_analysis_plots/diffrad_binning_10p2GeV.csv";
-static const char* kBinningCsv_10p6 = "/w/hallb-scshelf2102/clas12/singh/Softwares/DISANA_main/Phi_results/Final/DVKpKm/Cross-sections/phi_analysis_plots/diffrad_binning_10p6GeV.csv";
+static const char* kBinningCsv_10p2 = "/w/hallb-scshelf2102/clas12/singh/Softwares/DISANA_main/Phi_results/Final/DVKpKm/CNF_workshop/Cross-section/phi_analysis_plots/diffrad_binning_10p2GeV.csv";
+//static const char* kBinningCsv_10p2 = "/w/hallb-scshelf2102/clas12/singh/Softwares/DISANA_main/Phi_results/Final/DVKpKm/CNF_workshop/Cross-section/HS_approach/phi_analysis_plots/diffrad_binning_10p2GeV.csv";
+static const char* kBinningCsv_10p6 = "/w/hallb-scshelf2102/clas12/singh/Softwares/DISANA_main/Phi_results/Final/DVKpKm/CNF_workshop/Cross-section/phi_analysis_plots/diffrad_binning_10p6GeV.csv";
+//static const char* kBinningCsv_10p6 = "/w/hallb-scshelf2102/clas12/singh/Softwares/DISANA_main/Phi_results/Final/DVKpKm/CNF_workshop/Cross-section/HS_approach/phi_analysis_plots/diffrad_binning_10p6GeV.csv";
 static const char* kOutDir_10p2     = "./outputs/10p2GeV";
 static const char* kOutDir_10p6     = "./outputs/10p6GeV";
 // Fallback beam momentum if CSV doesn't provide beam_momentum (or CSV disabled)
@@ -383,6 +392,40 @@ static void WriteInmdiDat(const char* fname,
     row([](const BinDesc& b){ return b.fort_tmax;  });
     f.close();
     Printf("  [WriteInmdiDat] %s  (%d points)", fname, npoi);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  WriteInmdiDatVC — identical to WriteInmdiDat but uses a caller-supplied
+//  vcut value instead of the global kVcut.  Used by the Vcut scan (Step 7b).
+// ─────────────────────────────────────────────────────────────────────────────
+static void WriteInmdiDatVC(const char* fname,
+                             const std::vector<BinDesc>& bins,
+                             double beamMom, long seedVal, double vcutVal)
+{
+    int npoi = (int)bins.size();
+    std::ofstream f(fname);
+    if (!f.is_open()) { Error("WriteInmdiDatVC","Cannot open %s", fname); return; }
+    f << std::fixed << std::setprecision(6);
+    f << beamMom  << "     !  bmom  - lepton momentum\n";
+    f << kTmom    << "     !  tmom  - proton momentum (0 = fixed target)\n";
+    f << kLepton  << "         !  lepton - 1=electron 2=muon\n";
+    f << kIvec    << "         !  ivec  - 1=rho 2=omega 3=phi 4=J/psi\n";
+    f << kAnn1 << " " << kAnn2 << " " << kAnn3 << "   ! ann1 ann2 ann3\n";
+    f << vcutVal  << "        !  vcut  (scan value)\n";
+    f << kNev     << "         !  nev   - MC samples per point\n";
+    f << seedVal  << "    !  seed\n";
+    f << npoi     << "         !  npoi  - number of kinematic points\n";
+    auto row = [&](auto getter) {
+        for (int i = 0; i < npoi; ++i)
+            f << getter(bins[i]) << (i+1 < npoi ? " " : "\n");
+    };
+    row([](const BinDesc& b){ return b.fort_W2min; });
+    row([](const BinDesc& b){ return b.fort_W2max; });
+    row([](const BinDesc& b){ return b.fort_Q2min; });
+    row([](const BinDesc& b){ return b.fort_Q2max; });
+    row([](const BinDesc& b){ return b.fort_tmin;  });
+    row([](const BinDesc& b){ return b.fort_tmax;  });
+    f.close();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -947,6 +990,187 @@ void RunMDiffradNew(TString period="10p6")
                kOutCsvRC.c_str(), npoi,
                (int)activeQ2Edges.size()-1, (int)activeTpEdges.size()-1);
     }
+
+    // ── Step 7b: Vcut scan — δ_RC vs V-cut for 3 representative Q² bins ──────
+    //
+    //  Automatically picks the smallest, middle, and largest Q² bin, each
+    //  evaluated at the middle t' bin (all other parameters unchanged).
+    //  Sweeps Vcut = 0.0, 0.2, 0.4, …, kVcutScanMax and records δ_RC.
+    //
+    //  Output: diffrad_rc_vs_vcut.csv  (read by plot_rad_corrections.py for the
+    //          "δ_RC vs Vcut" panel in the summary figure)
+    // ─────────────────────────────────────────────────────────────────────────
+    {
+        int nQ2scan = (int)activeQ2Edges.size() - 1;
+        int nTpscan = (int)activeTpEdges.size() - 1;
+
+        // Three representative Q² bins: smallest (0), middle, largest
+        std::vector<int> scanIQ2 = { 0, nQ2scan / 2, nQ2scan - 1 };
+        // Remove duplicates when nQ2 is very small
+        scanIQ2.erase(std::unique(scanIQ2.begin(), scanIQ2.end()), scanIQ2.end());
+
+        // Fixed t' bin: middle bin
+        int fixedItp = nTpscan / 2;
+
+        // Build Vcut sweep: 0.0, 0.2, 0.4, …, kVcutScanMax
+        std::vector<double> vcutVals;
+        for (double vc = 0.0; vc <= kVcutScanMax + 1e-9; vc += kVcutScanStep)
+            vcutVals.push_back(std::round(vc * 100.0) / 100.0);  // avoid fp drift
+        int nVcut = (int)vcutVals.size();
+
+        Printf("[Step 7b] Vcut scan: %d Q2 bins x %d Vcut values = %d jobs",
+               (int)scanIQ2.size(), nVcut, (int)(scanIQ2.size() * nVcut));
+        Printf("  Q2 bin indices: ");
+        for (int iq : scanIQ2)
+            Printf("  iQ2=%d  [%.4f, %.4f)", iq, activeQ2Edges[iq], activeQ2Edges[iq+1]);
+        Printf("  Fixed itp = %d  [%.4f, %.4f)",
+               fixedItp, activeTpEdges[fixedItp], activeTpEdges[fixedItp+1]);
+        Printf("  Vcut: %.2f … %.2f  (step %.2f)",
+               vcutVals.front(), vcutVals.back(), kVcutScanStep);
+
+        std::string scanDir = kWorkDir + "/vcut_scan";
+        ::system(("mkdir -p " + scanDir).c_str());
+
+        // ── Job descriptor ────────────────────────────────────────────────────
+        struct VcJob {
+            int iQ2, vcIdx;
+            double vcut;
+            BinDesc bin;
+            std::string dir;
+        };
+        std::vector<VcJob> vcJobs;
+        vcJobs.reserve(scanIQ2.size() * nVcut);
+
+        for (int vcIdx = 0; vcIdx < nVcut; ++vcIdx) {
+            double vc = vcutVals[vcIdx];
+            for (int iq2 : scanIQ2) {
+                // Locate matching BinDesc from the main summary
+                BinDesc scanBin;
+                bool found = false;
+                for (auto& rb : summary) {
+                    if (rb.bin.iQ2 == iq2 && rb.bin.itp == fixedItp) {
+                        scanBin = rb.bin; found = true; break;
+                    }
+                }
+                if (!found) {
+                    Warning("RunMDiffrad",
+                            "Vcut scan: no bin found for iQ2=%d itp=%d — skipped",
+                            iq2, fixedItp);
+                    continue;
+                }
+                // Unique work directory per (vcIdx, iQ2)
+                std::string jdir = scanDir
+                    + "/vc_" + std::to_string(vcIdx)
+                    + "_q2_" + std::to_string(iq2);
+                ::system(("mkdir -p " + jdir).c_str());
+
+                // Each job gets a reproducible but unique seed
+                long ptSeed = kSeed
+                    + static_cast<long>(vcIdx)   * 100L
+                    + static_cast<long>(iq2)      * 10000L;
+                WriteInmdiDatVC((jdir + "/inmdi.dat").c_str(),
+                                {scanBin}, activeBeamMom, ptSeed, vc);
+
+                VcJob job;
+                job.iQ2 = iq2;  job.vcIdx = vcIdx;  job.vcut = vc;
+                job.bin = scanBin;  job.dir = jdir;
+                vcJobs.push_back(job);
+            }
+        }
+
+        // ── Throttled parallel execution (same pattern as Step 4) ────────────
+        Printf("  Launching %d Vcut-scan jobs (max %d concurrent) ...",
+               (int)vcJobs.size(), kMaxJobs);
+        {
+            using FutType = std::future<int>;
+            std::vector<FutType> running;
+            running.reserve(kMaxJobs);
+            int submitted2 = 0, failed2 = 0;
+
+            auto FlushVC = [&](bool waitAll) {
+                std::vector<int> doneIdx;
+                for (int i = 0; i < (int)running.size(); ++i) {
+                    if (!running[i].valid()) { doneIdx.push_back(i); continue; }
+                    bool ready = waitAll ||
+                        running[i].wait_for(std::chrono::seconds(0))
+                            == std::future_status::ready;
+                    if (ready) {
+                        if (running[i].get() != 0) ++failed2;
+                        doneIdx.push_back(i);
+                    }
+                }
+                for (int i = (int)doneIdx.size() - 1; i >= 0; --i)
+                    running.erase(running.begin() + doneIdx[i]);
+            };
+
+            for (auto& job : vcJobs) {
+                while ((int)running.size() >= kMaxJobs) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                    FlushVC(false);
+                }
+                std::string jdir2 = job.dir;
+                running.push_back(std::async(std::launch::async,
+                    [absExec, jdir2]() -> int {
+                        return ::system(
+                            ("cd " + jdir2 + " && " + absExec +
+                             " > mdiffrad.log 2>&1").c_str());
+                    }));
+                ++submitted2;
+            }
+            // Drain remaining jobs
+            while (!running.empty()) {
+                FlushVC(true);
+                if (!running.empty())
+                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+
+            if (failed2 > 0)
+                Printf("  Warning: %d / %d Vcut-scan jobs failed — "
+                       "check %s/*/mdiffrad.log", failed2, submitted2, scanDir.c_str());
+            else
+                Printf("  All %d Vcut-scan jobs finished OK.", submitted2);
+        }
+
+        // ── Collect results and write CSV ─────────────────────────────────────
+        std::string vcutCsvPath = O("diffrad_rc_vs_vcut.csv");
+        {
+            std::ofstream fvc(vcutCsvPath.c_str());
+            fvc << std::fixed << std::setprecision(8);
+            fvc << "# MDIFFRAD radiative correction vs Vcut\n"
+                << "# Generated by RunMDiffradNew  (Step 7b)\n"
+                << "# Vcut swept from 0.0 to " << kVcutScanMax
+                << " in steps of " << kVcutScanStep << " GeV^2\n"
+                << "# Three Q2 bins: smallest / middle / largest iQ2\n"
+                << "# t' bin fixed at itp=" << fixedItp
+                << "  [" << activeTpEdges[fixedItp]
+                << ", " << activeTpEdges[fixedItp+1] << ")\n"
+                << "# beam_momentum_GeV = " << activeBeamMom << "\n"
+                << "# W2_range_GeV2     = " << activeW2lo << " " << activeW2hi << "\n"
+                << "#\n"
+                << "vcut,iQ2,"
+                   "Q2_lo,Q2_hi,Q2_c,"
+                   "tprime_lo,tprime_hi,tprime_c,"
+                   "rad_corr,rad_corr_sigma,rad_corr_sem,nsamp\n";
+
+            for (auto& job : vcJobs) {
+                auto rows2 = ParseAllMc((job.dir + "/ALLmc.dat").c_str());
+                std::vector<double> deVals;
+                for (int s = 0; s < kNev && s < (int)rows2.size(); ++s)
+                    deVals.push_back(rows2[s].de);
+                double rc_m  = MeanFinite(deVals);
+                double rc_s  = StdFiniteSample(deVals);
+                double rc_se = (IsFinite(rc_s) && !deVals.empty())
+                    ? rc_s / std::sqrt((double)deVals.size()) : NAN;
+
+                fvc << job.vcut         << "," << job.iQ2          << ","
+                    << job.bin.Q2lo     << "," << job.bin.Q2hi     << "," << job.bin.Q2c  << ","
+                    << job.bin.tplo     << "," << job.bin.tphi     << "," << job.bin.tpc  << ","
+                    << rc_m             << "," << rc_s             << "," << rc_se        << ","
+                    << (int)deVals.size() << "\n";
+            }
+        }
+        Printf("  [Step 7b] Written: %s", vcutCsvPath.c_str());
+    }   // end Step 7b
 
     // ── Step 8: Publication-quality plots ────────────────────────────────────
     Printf("[Step 8] Drawing plots ...");
